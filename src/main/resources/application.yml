@@ -1,0 +1,15 @@
+server:
+  port: 8100
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+
+aegis:
+  hs256:
+    secret: ${HS256_SECRET:dev-secret-please-change-this-key-1234567890}
+  scheduler:
+    permits: 8
+    reject-threshold: 250.0

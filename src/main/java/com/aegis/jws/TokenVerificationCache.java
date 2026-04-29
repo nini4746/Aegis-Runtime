@@ -9,6 +9,8 @@ import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 @Component
 public class TokenVerificationCache {
@@ -16,8 +18,12 @@ public class TokenVerificationCache {
     private final boolean enabled;
     private final int maxEntries;
     private final BoundedTokenMap cache;
+    private final ReentrantReadWriteLock rwLock = new ReentrantReadWriteLock();
+    private final AtomicLong lastSeenNowMs = new AtomicLong(0);
+
     private final Counter hits;
     private final Counter misses;
+    private final Counter clockSkewEvictions;
 
     public TokenVerificationCache(MeterRegistry meters,
                                   @Value("${aegis.cache.enabled:true}") boolean enabled,
@@ -27,40 +33,69 @@ public class TokenVerificationCache {
         this.cache = new BoundedTokenMap(this.maxEntries);
         this.hits = Counter.builder("aegis.cache.hits").register(meters);
         this.misses = Counter.builder("aegis.cache.misses").register(meters);
+        this.clockSkewEvictions = Counter.builder("aegis.cache.clock_skew_evictions").register(meters);
     }
 
     public Jws<Claims> get(String token) {
         if (!enabled) return null;
-        long now = System.currentTimeMillis();
+        long now = monotonicNow();
         CachedJws e;
-        synchronized (cache) {
+        rwLock.readLock().lock();
+        try {
             e = cache.get(token);
-            if (e != null && e.expiresAtMs <= now) {
-                cache.remove(token);
-                e = null;
+        } finally {
+            rwLock.readLock().unlock();
+        }
+        if (e == null || e.expiresAtMs <= now) {
+            if (e != null) {
+                rwLock.writeLock().lock();
+                try {
+                    cache.remove(token);
+                } finally {
+                    rwLock.writeLock().unlock();
+                }
             }
+            misses.increment();
+            return null;
         }
-        if (e != null) {
-            hits.increment();
-            return e.jws;
-        }
-        misses.increment();
-        return null;
+        hits.increment();
+        return e.jws;
     }
 
     public void put(String token, Jws<Claims> jws) {
         if (!enabled) return;
         long expiresAt = jws.getPayload().getExpiration() == null
-                ? System.currentTimeMillis() + 60_000
+                ? monotonicNow() + 60_000
                 : jws.getPayload().getExpiration().getTime();
-        synchronized (cache) {
+        rwLock.writeLock().lock();
+        try {
             cache.put(token, new CachedJws(jws, expiresAt));
+        } finally {
+            rwLock.writeLock().unlock();
         }
     }
 
     public int size() {
-        synchronized (cache) {
+        rwLock.readLock().lock();
+        try {
             return cache.size();
+        } finally {
+            rwLock.readLock().unlock();
+        }
+    }
+
+    // monotonic clock guard: never return a value smaller than previously observed.
+    // protects against backward NTP adjustments accepting expired tokens.
+    private long monotonicNow() {
+        long sysNow = System.currentTimeMillis();
+        while (true) {
+            long prev = lastSeenNowMs.get();
+            if (sysNow >= prev) {
+                if (lastSeenNowMs.compareAndSet(prev, sysNow)) return sysNow;
+            } else {
+                clockSkewEvictions.increment();
+                return prev;
+            }
         }
     }
 

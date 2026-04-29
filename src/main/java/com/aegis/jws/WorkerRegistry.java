@@ -34,6 +34,8 @@ public class WorkerRegistry {
     private final SecretKey hs256Secret;
     private final PrivateKey rsaPrivate;
     private final PrivateKey ecPrivate;
+    private final PublicKey rsaPublic;
+    private final PublicKey ecPublic;
 
     public WorkerRegistry(@Value("${aegis.hs256.secret:}") String hsSecret,
                           @Value("${aegis.rs256.private-key-path:}") String rsaPrivPath,
@@ -45,10 +47,12 @@ public class WorkerRegistry {
 
         AsymKeys rsa = loadOrGenerateRsa(rsaPrivPath, rsaPubPath);
         this.rsaPrivate = rsa.priv;
+        this.rsaPublic = rsa.pub;
         workers.put("RS256", new AlgorithmWorker("RS256", rsa.pub));
 
         AsymKeys ec = loadOrGenerateEc(ecPrivPath, ecPubPath);
         this.ecPrivate = ec.priv;
+        this.ecPublic = ec.pub;
         workers.put("ES256", new AlgorithmWorker("ES256", ec.pub));
     }
 
@@ -133,6 +137,8 @@ public class WorkerRegistry {
     public SecretKey hs256Secret() { return hs256Secret; }
     public PrivateKey rsaPrivate() { return rsaPrivate; }
     public PrivateKey ecPrivate() { return ecPrivate; }
+    public PublicKey rsaPublic() { return rsaPublic; }
+    public PublicKey ecPublic() { return ecPublic; }
 
     private record AsymKeys(PrivateKey priv, PublicKey pub) {}
 }

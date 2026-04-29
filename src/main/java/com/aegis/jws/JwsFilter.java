@@ -54,6 +54,8 @@ public class JwsFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
+        if (path.startsWith("/.well-known/")) return true;
+        if (path.startsWith("/actuator/")) return true;
         return !path.startsWith("/api/");
     }
 

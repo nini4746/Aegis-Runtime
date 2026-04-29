@@ -108,6 +108,19 @@ class JwsVerifyTests {
     }
 
     @Test
+    void jwks_endpoint_exposes_rs256_and_es256_keys() throws Exception {
+        var res = mvc.perform(get("/.well-known/jwks.json"))
+                .andExpect(status().isOk())
+                .andReturn();
+        String body = res.getResponse().getContentAsString();
+        assertTrue(body.contains("\"kty\":\"RSA\""));
+        assertTrue(body.contains("\"kty\":\"EC\""));
+        assertTrue(body.contains("\"alg\":\"RS256\""));
+        assertTrue(body.contains("\"alg\":\"ES256\""));
+        assertTrue(body.contains("\"kid\":\"rs256-current\""));
+    }
+
+    @Test
     void hs384_token_is_rejected_by_allowlist() throws Exception {
         // craft a header claiming HS384 — even with a valid-looking signature, allowlist must reject before verification
         String header = java.util.Base64.getUrlEncoder().withoutPadding()

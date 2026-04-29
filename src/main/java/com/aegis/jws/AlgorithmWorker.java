@@ -12,10 +12,12 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public class AlgorithmWorker {
 
+    private static final double EWMA_ALPHA = 0.1;
+    private static final double DEFAULT_AVG_MS = 1.0;
+
     private final String name;
     private final Key verifyKey;
-    private final AtomicLong totalNanos = new AtomicLong();
-    private final AtomicLong totalCount = new AtomicLong();
+    private final AtomicLong avgNanosBits = new AtomicLong(Double.doubleToRawLongBits(-1.0));
 
     public AlgorithmWorker(String name, Key verifyKey) {
         this.name = name;
@@ -37,15 +39,22 @@ public class AlgorithmWorker {
             }
             return parser.parseSignedClaims(token);
         } finally {
-            long delta = System.nanoTime() - start;
-            totalNanos.addAndGet(delta);
-            totalCount.incrementAndGet();
+            updateEwma(System.nanoTime() - start);
+        }
+    }
+
+    private void updateEwma(long sampleNanos) {
+        while (true) {
+            long bits = avgNanosBits.get();
+            double prev = Double.longBitsToDouble(bits);
+            double next = prev < 0 ? sampleNanos : EWMA_ALPHA * sampleNanos + (1 - EWMA_ALPHA) * prev;
+            if (avgNanosBits.compareAndSet(bits, Double.doubleToRawLongBits(next))) return;
         }
     }
 
     public double avgVerifyTimeMs() {
-        long c = totalCount.get();
-        if (c == 0) return 1.0;
-        return (totalNanos.get() / 1_000_000.0) / c;
+        double avg = Double.longBitsToDouble(avgNanosBits.get());
+        if (avg < 0) return DEFAULT_AVG_MS;
+        return avg / 1_000_000.0;
     }
 }

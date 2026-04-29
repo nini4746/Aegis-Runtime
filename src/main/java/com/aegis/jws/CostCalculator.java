@@ -13,9 +13,16 @@ public final class CostCalculator {
 
     public static double currentMemoryPressure() {
         Runtime r = Runtime.getRuntime();
-        long used = r.totalMemory() - r.freeMemory();
+        long total = r.totalMemory();
         long max = r.maxMemory();
-        if (max <= 0) return 0.0;
-        return Math.min(1.0, used / (double) max);
+        long free = r.freeMemory();
+        long used = total - free;
+        long ceiling = max > 0 ? max : total;
+        if (ceiling <= 0) return 0.0;
+        double rawPressure = used / (double) ceiling;
+        // headroom-aware: if heap hasn't expanded close to max, weight pressure lower
+        double heapExpansion = total / (double) ceiling;
+        double weighted = rawPressure * Math.min(1.0, heapExpansion + 0.25);
+        return Math.max(0.0, Math.min(1.0, weighted));
     }
 }

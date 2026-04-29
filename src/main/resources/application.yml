@@ -1,5 +1,5 @@
 server:
-  port: 8100
+  port: ${SERVER_PORT:8100}
 
 management:
   endpoints:
@@ -9,7 +9,16 @@ management:
 
 aegis:
   hs256:
-    secret: ${HS256_SECRET:dev-secret-please-change-this-key-1234567890}
+    secret: ${HS256_SECRET:}
+  rs256:
+    private-key-path: ${RS256_PRIVATE_KEY_PATH:}
+    public-key-path: ${RS256_PUBLIC_KEY_PATH:}
+  es256:
+    private-key-path: ${ES256_PRIVATE_KEY_PATH:}
+    public-key-path: ${ES256_PUBLIC_KEY_PATH:}
   scheduler:
-    permits: 8
-    reject-threshold: 250.0
+    permits: ${AEGIS_PERMITS:8}
+    reject-threshold: ${AEGIS_REJECT_THRESHOLD:250.0}
+  cache:
+    enabled: ${AEGIS_CACHE_ENABLED:true}
+    max-entries: ${AEGIS_CACHE_MAX_ENTRIES:2048}

@@ -19,12 +19,17 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 @Component
 public class JwsFilter extends OncePerRequestFilter {
 
     private static final Logger log = LoggerFactory.getLogger(JwsFilter.class);
+    // explicit allowlist: even if WorkerRegistry contains a key, only these JWS algorithms
+    // are accepted from the wire. This blocks "alg":"none" / unsigned JWTs and any algorithm
+    // confusion attacks at the filter boundary, before any worker lookup.
+    private static final Set<String> ALLOWED_ALGORITHMS = Set.of("HS256", "RS256", "ES256");
 
     private final WorkerRegistry workers;
     private final CostAwareScheduler scheduler;
@@ -79,6 +84,12 @@ public class JwsFilter extends OncePerRequestFilter {
             failCounter.increment();
             events.publishEvent(new JwsRejectedEvent("malformed-header", "unknown", 0.0));
             res.sendError(HttpServletResponse.SC_UNAUTHORIZED, "malformed token");
+            return;
+        }
+        if (!ALLOWED_ALGORITHMS.contains(alg)) {
+            failCounter.increment();
+            events.publishEvent(new JwsRejectedEvent("disallowed-algorithm", alg, 0.0));
+            res.sendError(HttpServletResponse.SC_UNAUTHORIZED, "disallowed algorithm: " + alg);
             return;
         }
         AlgorithmWorker worker = workers.forAlgorithm(alg);

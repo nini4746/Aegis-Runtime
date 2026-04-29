@@ -108,6 +108,30 @@ class JwsVerifyTests {
     }
 
     @Test
+    void hs384_token_is_rejected_by_allowlist() throws Exception {
+        // craft a header claiming HS384 — even with a valid-looking signature, allowlist must reject before verification
+        String header = java.util.Base64.getUrlEncoder().withoutPadding()
+                .encodeToString("{\"alg\":\"HS384\",\"typ\":\"JWT\"}".getBytes());
+        String payload = java.util.Base64.getUrlEncoder().withoutPadding()
+                .encodeToString("{\"sub\":\"x\"}".getBytes());
+        String fake = header + "." + payload + ".aaaa";
+        mvc.perform(get("/api/ping").header("Authorization", "Bearer " + fake))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void cached_token_does_not_re_invoke_worker() throws Exception {
+        String token = issueHs256("cache-user", 60_000);
+        // first call: miss, second call: hit
+        mvc.perform(get("/api/ping").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk());
+        mvc.perform(get("/api/ping").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk());
+        var hits = meters.find("aegis.cache.hits").counter();
+        assertTrue(hits != null && hits.count() >= 1, "second call must hit cache");
+    }
+
+    @Test
     void concurrent_flood_triggers_some_rejections() throws Exception {
         String token = issueHs256("flood", 60_000);
         int threads = 64;

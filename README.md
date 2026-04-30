@@ -36,7 +36,7 @@ curl -i localhost:8100/api/ping -H "Authorization: Bearer <jwt>"           # 200
 curl localhost:8100/actuator/prometheus | grep aegis_
 ```
 
-## 테스트 (11건)
+## 테스트 (23건)
 
 | 케이스 | 검증 |
 |---|---|
@@ -52,7 +52,7 @@ curl localhost:8100/actuator/prometheus | grep aegis_
 | `cached_token_does_not_re_invoke_worker` | 토큰 캐시 hit 시 워커 재호출 없음 |
 | `concurrent_flood_triggers_some_rejections` | 64 동시 호출 → 일부 통과·일부 거절·rejected 카운터 존재 |
 
-`mvn test` → 11/11 pass.
+`mvn test` → 23/23 pass (JwsVerifyTests 11, SubjectRateLimiterTest 6, RateLimitFilterTest 4, CostReconcilerTest 2).
 
 ## 의도적으로 보류한 항목
 
@@ -66,3 +66,6 @@ curl localhost:8100/actuator/prometheus | grep aegis_
 - `KeySource` SPI — `PropertyKeySource` 기본 구현, JWKS/KMS 어댑터로 교체 가능
 - `TokenVerificationCache` — `ReadWriteLock` + monotonic clock, 시간 역행 방어
 - OpenTelemetry 트레이싱 진입점
+- `SubjectRateLimiter` — `sub` claim 기반 token-bucket. 단일 자격증명이 검증 큐를 독점하지 못하도록 차단. `aegis.ratelimit.capacity` / `refill-per-sec` 튜닝 가능.
+- `CostReconciler` — 사전 예측 cost와 실제 verify time 기반 cost 차이를 `aegis.cost.reconciliation_error_*` 메트릭으로 노출. EWMA 노화 감지에 활용.
+- 추가 메트릭: `aegis.verify.by_algorithm{result,algorithm}`, `aegis.verify.rejected_reason{reason,algorithm}`, `aegis.ratelimit.allowed/rejected`.

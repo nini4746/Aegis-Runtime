@@ -75,6 +75,23 @@ public class TokenVerificationCache {
         }
     }
 
+    /**
+     * Invalidate every cached entry whose token was signed with the given algorithm (R4 kill).
+     * Reads each entry's JWS header algorithm under the write lock. Returns the count removed.
+     * Does NOT touch key material - only the verification cache.
+     */
+    public int invalidateAlgorithm(String algorithm) {
+        if (!enabled || algorithm == null) return 0;
+        rwLock.writeLock().lock();
+        try {
+            int before = cache.size();
+            cache.entrySet().removeIf(e -> algorithm.equals(e.getValue().jws.getHeader().getAlgorithm()));
+            return before - cache.size();
+        } finally {
+            rwLock.writeLock().unlock();
+        }
+    }
+
     public int size() {
         rwLock.readLock().lock();
         try {

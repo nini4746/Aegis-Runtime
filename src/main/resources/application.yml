@@ -28,3 +28,15 @@ aegis:
   cache:
     enabled: ${AEGIS_CACHE_ENABLED:true}
     max-entries: ${AEGIS_CACHE_MAX_ENTRIES:2048}
+
+policy:
+  throttle-latency-ms: ${POLICY_THROTTLE_LATENCY_MS:50}
+  throttle-failure-rate: ${POLICY_THROTTLE_FAILURE_RATE:0.25}
+  dead-dwell-ms: ${POLICY_DEAD_DWELL_MS:5000}
+  kill-memory-pressure: ${POLICY_KILL_MEMORY_PRESSURE:0.85}
+  recover-cooldown-ms: ${POLICY_RECOVER_COOLDOWN_MS:10000}
+  score-latency-ceiling-ms: ${POLICY_SCORE_LATENCY_CEILING_MS:100}
+  sample-interval-ms: ${POLICY_SAMPLE_INTERVAL_MS:60000}
+  kill-order: [ES256, RS256]
+  min-share:
+    HS256: 30

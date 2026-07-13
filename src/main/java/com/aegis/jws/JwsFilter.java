@@ -2,6 +2,9 @@ package com.aegis.jws;
 
 import com.aegis.events.JwsRejectedEvent;
 import com.aegis.events.JwsVerifiedEvent;
+import com.aegis.lifecycle.AlgorithmState;
+import com.aegis.lifecycle.LifecycleRegistry;
+import com.aegis.lifecycle.PolicyProperties;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jws;
 import io.micrometer.core.instrument.Counter;
@@ -39,6 +42,8 @@ public class JwsFilter extends OncePerRequestFilter {
     private final CostReconciler reconciler;
     private final ApplicationEventPublisher events;
     private final MeterRegistry meters;
+    private final LifecycleRegistry lifecycles;
+    private final PolicyProperties policy;
     private final Counter okCounter;
     private final Counter failCounter;
     private final Timer verifyTimer;
@@ -47,7 +52,8 @@ public class JwsFilter extends OncePerRequestFilter {
                      TokenVerificationCache cache,
                      SubjectRateLimiter rateLimiter,
                      CostReconciler reconciler,
-                     ApplicationEventPublisher events, MeterRegistry meters) {
+                     ApplicationEventPublisher events, MeterRegistry meters,
+                     LifecycleRegistry lifecycles, PolicyProperties policy) {
         this.workers = workers;
         this.scheduler = scheduler;
         this.cache = cache;
@@ -55,6 +61,8 @@ public class JwsFilter extends OncePerRequestFilter {
         this.reconciler = reconciler;
         this.events = events;
         this.meters = meters;
+        this.lifecycles = lifecycles;
+        this.policy = policy;
         this.okCounter = Counter.builder("aegis.verify.success").register(meters);
         this.failCounter = Counter.builder("aegis.verify.failure").register(meters);
         this.verifyTimer = Timer.builder("aegis.verify.latency").register(meters);
@@ -139,6 +147,23 @@ public class JwsFilter extends OncePerRequestFilter {
         }
         int tokenSize = token.getBytes(StandardCharsets.UTF_8).length;
         double memPressure = CostCalculator.currentMemoryPressure();
+
+        // R5 lifecycle gate. DEAD: refuse NEW admission (bypass the cost scheduler, do not
+        // cache) but still verify existing tokens via fallback using the preserved key (D3).
+        // THROTTLED: prefer-reject only under high memory pressure (D4).
+        AlgorithmState state = lifecycles.stateOf(alg);
+        if (state == AlgorithmState.DEAD) {
+            handleDeadFallback(req, res, chain, worker, token, alg);
+            return;
+        }
+        if (state == AlgorithmState.THROTTLED && memPressure > policy.getKillMemoryPressure()) {
+            recordReason("throttled-mem-pressure", alg);
+            events.publishEvent(new JwsRejectedEvent("throttled-mem-pressure", alg, 0.0));
+            res.setHeader("X-Aegis-Lifecycle", "THROTTLED");
+            res.sendError(HttpServletResponse.SC_SERVICE_UNAVAILABLE, "algorithm throttled under memory pressure");
+            return;
+        }
+
         double cost = CostCalculator.compute(worker.avgVerifyTimeMs(), tokenSize, memPressure);
         // tryAdmit only acquires a permit when it returns true; on false no permit is held,
         // so release() must be paired ONLY with the true branch via the finally below.
@@ -183,6 +208,48 @@ public class JwsFilter extends OncePerRequestFilter {
             res.sendError(HttpServletResponse.SC_UNAUTHORIZED, "invalid token");
         } finally {
             scheduler.release();
+        }
+    }
+
+    /**
+     * D3 fallback path for a DEAD algorithm: the signature key material is preserved, so an
+     * already-issued (still valid) token is verified DIRECTLY, bypassing the cost-based
+     * admission scheduler (no permit taken -> no scheduler.release needed) and NOT re-cached.
+     * This is what "new admission rejected, existing token served via fallback" means here:
+     * no new scheduler slot is granted and the result never becomes a hot cache entry.
+     */
+    private void handleDeadFallback(HttpServletRequest req, HttpServletResponse res, FilterChain chain,
+                                    AlgorithmWorker worker, String token, String alg)
+            throws IOException, ServletException {
+        long start = System.nanoTime();
+        try {
+            Jws<Claims> jws = worker.verify(token);
+            verifyTimer.record(System.nanoTime() - start, TimeUnit.NANOSECONDS);
+            String subject = jws.getPayload().getSubject();
+            if (!rateLimiter.tryAcquire(subject)) {
+                failCounter.increment();
+                recordReason("rate-limit", alg);
+                events.publishEvent(new JwsRejectedEvent("rate-limit", alg, 0.0));
+                res.setHeader("X-Aegis-Subject", subject == null ? "" : subject);
+                res.sendError(429, "rate limit exceeded");
+                return;
+            }
+            okCounter.increment();
+            recordPerAlgo("success", alg);
+            // deliberately NOT cached: DEAD algorithms do not get new admission slots
+            events.publishEvent(new JwsVerifiedEvent(alg, subject, 0.0, System.nanoTime() - start));
+            req.setAttribute("aegis.subject", subject);
+            req.setAttribute("aegis.algorithm", alg);
+            req.setAttribute("aegis.admission", "dead-fallback");
+            res.setHeader("X-Aegis-Admission", "dead-fallback");
+            chain.doFilter(req, res);
+        } catch (Exception e) {
+            failCounter.increment();
+            recordReason("verify-failed", alg);
+            recordPerAlgo("failure", alg);
+            events.publishEvent(new JwsRejectedEvent("verify-failed:" + e.getClass().getSimpleName(), alg, 0.0));
+            log.debug("dead-fallback verify failed: {}", e.getMessage());
+            res.sendError(HttpServletResponse.SC_UNAUTHORIZED, "invalid token");
         }
     }
 }

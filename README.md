@@ -60,6 +60,7 @@ curl localhost:8100/actuator/prometheus | grep aegis_
 - 동적 정책(YAML 정책 엔진)
 - 분산 환경 공유 큐
 - mTLS·OAuth2 통합
+- 알고리즘 라이프사이클 상태 머신(ACTIVE/THROTTLED/DEAD/RECOVERING), PolicyEngine, kill-order, Leaderboard — 저장소의 초기 설계 문서(`Aegis-Runtime.md`)가 기술하는 구상이며, `src/main`에는 미구현. 실제로 구현된 것은 워커별 EWMA 비용 계측과 Semaphore 기반 admission뿐이다.
 
 ## 최근 추가
 

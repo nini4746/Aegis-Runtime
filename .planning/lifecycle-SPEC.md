@@ -88,3 +88,40 @@ minimal testable slice: 상태머신, PolicyEngine, sampler, kill/recover(캐시
 - [ ] kill이 서명 key material을 삭제하지 않는다(D3).
 - [ ] 전이 로직에 실 sleep/실시간 의존을 넣지 않는다(fake clock 필수).
 - [ ] min-share 보호 알고리즘을 kill하지 않는다.
+
+---
+
+# SPEC phase-2: THROTTLE 실집행 + DEAD fallback 격리
+
+phase-1 (minimal slice, 커밋 8e31fc7) 이 범위 외로 미룬 두 항목. 자율 결정 D7-D9 로 확정 (2026-07-14).
+
+## 자율 결정
+
+- **D7 THROTTLE 실집행 = 2단 게이트 (공유 semaphore 보존)**: `CostAwareScheduler` 의 글로벌 `Semaphore(8)` 는 손대지 않는다 (검증된 코어, 회귀 위험 최소화). 대신 알고리즘별 in-flight 카운터(AtomicInteger)를 추가하고, **THROTTLED 상태일 때만** `policy.throttle.max-concurrent` (기본 2) 초과 시 503 거부. ACTIVE 알고리즘은 카운터만 증가하고 캡 미적용 - 기존 admission 의미론 불변. 기존 D4 의 "고압력시 우선거부" 는 유지 (2단 게이트와 AND 아님, 선행 단락 그대로).
+- **D8 DEAD fallback 격리 = 전용 소형 풀**: `handleDeadFallback` 직접 검증 경로에 전용 semaphore `policy.fallback.max-concurrent` (기본 2), non-blocking tryAcquire. 포화 시 503 + `X-Aegis-Admission: fallback-saturated`. DEAD 토큰 폭주가 글로벌 스케줄러 보호 없이 CPU 를 먹는 구멍을 막는다.
+- **D9 카운터 누수 방어**: per-algo in-flight 및 fallback 풀 모두 try/finally 로 release. 예외 경로 포함.
+
+## 요구사항
+
+### R9. per-algo THROTTLE 캡
+- **수용 기준**:
+  - [ ] THROTTLED 알고리즘의 동시 in-flight 가 `policy.throttle.max-concurrent` 를 초과하면 503 + `X-Aegis-Lifecycle: THROTTLED-cap`.
+  - [ ] ACTIVE/RECOVERING 알고리즘은 캡 미적용 (글로벌 semaphore 만 적용, 기존과 동일).
+  - [ ] 캡 거부는 글로벌 permit 을 소모하지 않는다.
+  - [ ] 동시성 테스트: THROTTLED 로 강제한 상태에서 N>캡 동시 요청 → 정확히 캡 개수만 통과 (latch 로 in-flight 고정).
+
+### R10. fallback 격리 풀
+- **수용 기준**:
+  - [ ] DEAD fallback 검증이 전용 풀 (기본 2) 안에서만 실행.
+  - [ ] 풀 포화 시 503 + `X-Aegis-Admission: fallback-saturated`, 글로벌 스케줄러 미접촉.
+  - [ ] 정상 fallback (풀 여유) 은 기존 phase-1 의미론 그대로 (200, dead-fallback 헤더, 재캐시 안 함).
+  - [ ] 동시성 테스트: latch 로 fallback 2개 점유 후 3번째 요청 → 503.
+
+### R11. 게이트
+- [ ] 기존 41 테스트 green (회귀 0).
+- [ ] `mvn test` 전체 green, CI green.
+
+## must-NOT
+- [ ] ACTIVE 알고리즘의 admission 의미론을 바꾸지 않는다 (글로벌 semaphore 경로 그대로).
+- [ ] CostAwareScheduler 내부를 수정하지 않는다.
+- [ ] 카운터/풀 누수 금지 (예외 경로 포함 release).

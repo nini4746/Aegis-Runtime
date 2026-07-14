@@ -33,6 +33,10 @@ public class PolicyProperties {
     private List<String> killOrder = new ArrayList<>(List.of("ES256", "RS256"));
     /** Algorithms protected from kill (THROTTLE only). Value = reserved share (informational). */
     private Map<String, Integer> minShare = new HashMap<>(Map.of("HS256", 30));
+    /** R9/D7: per-algo THROTTLE in-flight cap, enforced outside the global scheduler. */
+    private Throttle throttle = new Throttle();
+    /** R10/D8: isolated DEAD-fallback direct-verification pool. */
+    private Fallback fallback = new Fallback();
 
     public long getThrottleLatencyMs() { return throttleLatencyMs; }
     public void setThrottleLatencyMs(long v) { this.throttleLatencyMs = v; }
@@ -60,4 +64,24 @@ public class PolicyProperties {
 
     public Map<String, Integer> getMinShare() { return minShare; }
     public void setMinShare(Map<String, Integer> v) { this.minShare = v; }
+
+    public Throttle getThrottle() { return throttle; }
+    public void setThrottle(Throttle v) { this.throttle = v; }
+
+    public Fallback getFallback() { return fallback; }
+    public void setFallback(Fallback v) { this.fallback = v; }
+
+    /** Bound from `policy.throttle.max-concurrent` (D7, default 2). */
+    public static class Throttle {
+        private int maxConcurrent = 2;
+        public int getMaxConcurrent() { return maxConcurrent; }
+        public void setMaxConcurrent(int v) { this.maxConcurrent = v; }
+    }
+
+    /** Bound from `policy.fallback.max-concurrent` (D8, default 2). */
+    public static class Fallback {
+        private int maxConcurrent = 2;
+        public int getMaxConcurrent() { return maxConcurrent; }
+        public void setMaxConcurrent(int v) { this.maxConcurrent = v; }
+    }
 }

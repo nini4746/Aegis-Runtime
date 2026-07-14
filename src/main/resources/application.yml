@@ -40,3 +40,7 @@ policy:
   kill-order: [ES256, RS256]
   min-share:
     HS256: 30
+  throttle:
+    max-concurrent: ${POLICY_THROTTLE_MAX_CONCURRENT:2}
+  fallback:
+    max-concurrent: ${POLICY_FALLBACK_MAX_CONCURRENT:2}

@@ -44,6 +44,7 @@ public class JwsFilter extends OncePerRequestFilter {
     private final MeterRegistry meters;
     private final LifecycleRegistry lifecycles;
     private final PolicyProperties policy;
+    private final AdmissionGate admissionGate;
     private final Counter okCounter;
     private final Counter failCounter;
     private final Timer verifyTimer;
@@ -53,7 +54,8 @@ public class JwsFilter extends OncePerRequestFilter {
                      SubjectRateLimiter rateLimiter,
                      CostReconciler reconciler,
                      ApplicationEventPublisher events, MeterRegistry meters,
-                     LifecycleRegistry lifecycles, PolicyProperties policy) {
+                     LifecycleRegistry lifecycles, PolicyProperties policy,
+                     AdmissionGate admissionGate) {
         this.workers = workers;
         this.scheduler = scheduler;
         this.cache = cache;
@@ -63,6 +65,7 @@ public class JwsFilter extends OncePerRequestFilter {
         this.meters = meters;
         this.lifecycles = lifecycles;
         this.policy = policy;
+        this.admissionGate = admissionGate;
         this.okCounter = Counter.builder("aegis.verify.success").register(meters);
         this.failCounter = Counter.builder("aegis.verify.failure").register(meters);
         this.verifyTimer = Timer.builder("aegis.verify.latency").register(meters);
@@ -156,6 +159,8 @@ public class JwsFilter extends OncePerRequestFilter {
             handleDeadFallback(req, res, chain, worker, token, alg);
             return;
         }
+        // D4 (unchanged, and independent of the R9 cap): under high memory pressure a THROTTLED
+        // algorithm prefers to reject outright. This precedes the cap - not AND-ed with it.
         if (state == AlgorithmState.THROTTLED && memPressure > policy.getKillMemoryPressure()) {
             recordReason("throttled-mem-pressure", alg);
             events.publishEvent(new JwsRejectedEvent("throttled-mem-pressure", alg, 0.0));
@@ -164,50 +169,69 @@ public class JwsFilter extends OncePerRequestFilter {
             return;
         }
 
-        double cost = CostCalculator.compute(worker.avgVerifyTimeMs(), tokenSize, memPressure);
-        // tryAdmit only acquires a permit when it returns true; on false no permit is held,
-        // so release() must be paired ONLY with the true branch via the finally below.
-        if (!scheduler.tryAdmit(cost)) {
-            recordReason("scheduler-busy", alg);
-            events.publishEvent(new JwsRejectedEvent("scheduler-busy", alg, cost));
-            res.setHeader("X-Aegis-Cost", String.valueOf(cost));
-            res.sendError(HttpServletResponse.SC_SERVICE_UNAVAILABLE, "verifier overloaded");
-            return;
-        }
-        long start = System.nanoTime();
-        try {
-            Jws<Claims> jws = worker.verify(token);
-            long delta = System.nanoTime() - start;
-            verifyTimer.record(delta, TimeUnit.NANOSECONDS);
-            String subject = jws.getPayload().getSubject();
-            // rate-limit AFTER signature verification so the cost of verifying spam tokens
-            // still counts against the misbehaving subject's bucket.
-            if (!rateLimiter.tryAcquire(subject)) {
-                failCounter.increment();
-                recordReason("rate-limit", alg);
-                events.publishEvent(new JwsRejectedEvent("rate-limit", alg, cost));
-                res.setHeader("X-Aegis-Subject", subject == null ? "" : subject);
-                res.sendError(429, "rate limit exceeded");
+        // R9/D7 per-algo THROTTLE cap. Only a THROTTLED algorithm pays the in-flight counter;
+        // ACTIVE/RECOVERING keep the exact prior admission semantics (global scheduler only).
+        // A cap rejection returns BEFORE scheduler.tryAdmit, so no global permit is consumed.
+        boolean throttleCounted = false;
+        if (state == AlgorithmState.THROTTLED) {
+            if (!admissionGate.tryEnterThrottled(alg)) {
+                recordReason("throttled-cap", alg);
+                events.publishEvent(new JwsRejectedEvent("throttled-cap", alg, 0.0));
+                res.setHeader("X-Aegis-Lifecycle", "THROTTLED-cap");
+                res.sendError(HttpServletResponse.SC_SERVICE_UNAVAILABLE, "algorithm throttle cap exceeded");
                 return;
             }
-            reconciler.record(cost, delta, tokenSize, memPressure);
-            okCounter.increment();
-            recordPerAlgo("success", alg);
-            cache.put(token, jws);
-            events.publishEvent(new JwsVerifiedEvent(alg, subject, cost, delta));
-            req.setAttribute("aegis.subject", subject);
-            req.setAttribute("aegis.algorithm", alg);
-            req.setAttribute("aegis.cache", "miss");
-            chain.doFilter(req, res);
-        } catch (Exception e) {
-            failCounter.increment();
-            recordReason("verify-failed", alg);
-            recordPerAlgo("failure", alg);
-            events.publishEvent(new JwsRejectedEvent("verify-failed:" + e.getClass().getSimpleName(), alg, cost));
-            log.debug("verify failed: {}", e.getMessage());
-            res.sendError(HttpServletResponse.SC_UNAUTHORIZED, "invalid token");
+            throttleCounted = true;
+        }
+        // D9: the throttle counter is held across admit+verify+chain and released on EVERY path.
+        try {
+            double cost = CostCalculator.compute(worker.avgVerifyTimeMs(), tokenSize, memPressure);
+            // tryAdmit only acquires a permit when it returns true; on false no permit is held,
+            // so release() must be paired ONLY with the true branch via the finally below.
+            if (!scheduler.tryAdmit(cost)) {
+                recordReason("scheduler-busy", alg);
+                events.publishEvent(new JwsRejectedEvent("scheduler-busy", alg, cost));
+                res.setHeader("X-Aegis-Cost", String.valueOf(cost));
+                res.sendError(HttpServletResponse.SC_SERVICE_UNAVAILABLE, "verifier overloaded");
+                return;
+            }
+            long start = System.nanoTime();
+            try {
+                Jws<Claims> jws = worker.verify(token);
+                long delta = System.nanoTime() - start;
+                verifyTimer.record(delta, TimeUnit.NANOSECONDS);
+                String subject = jws.getPayload().getSubject();
+                // rate-limit AFTER signature verification so the cost of verifying spam tokens
+                // still counts against the misbehaving subject's bucket.
+                if (!rateLimiter.tryAcquire(subject)) {
+                    failCounter.increment();
+                    recordReason("rate-limit", alg);
+                    events.publishEvent(new JwsRejectedEvent("rate-limit", alg, cost));
+                    res.setHeader("X-Aegis-Subject", subject == null ? "" : subject);
+                    res.sendError(429, "rate limit exceeded");
+                    return;
+                }
+                reconciler.record(cost, delta, tokenSize, memPressure);
+                okCounter.increment();
+                recordPerAlgo("success", alg);
+                cache.put(token, jws);
+                events.publishEvent(new JwsVerifiedEvent(alg, subject, cost, delta));
+                req.setAttribute("aegis.subject", subject);
+                req.setAttribute("aegis.algorithm", alg);
+                req.setAttribute("aegis.cache", "miss");
+                chain.doFilter(req, res);
+            } catch (Exception e) {
+                failCounter.increment();
+                recordReason("verify-failed", alg);
+                recordPerAlgo("failure", alg);
+                events.publishEvent(new JwsRejectedEvent("verify-failed:" + e.getClass().getSimpleName(), alg, cost));
+                log.debug("verify failed: {}", e.getMessage());
+                res.sendError(HttpServletResponse.SC_UNAUTHORIZED, "invalid token");
+            } finally {
+                scheduler.release();
+            }
         } finally {
-            scheduler.release();
+            if (throttleCounted) admissionGate.exitThrottled(alg);
         }
     }
 
@@ -221,6 +245,16 @@ public class JwsFilter extends OncePerRequestFilter {
     private void handleDeadFallback(HttpServletRequest req, HttpServletResponse res, FilterChain chain,
                                     AlgorithmWorker worker, String token, String alg)
             throws IOException, ServletException {
+        // R10/D8: DEAD-token direct verification runs only inside a small dedicated pool so a
+        // flood of still-valid DEAD tokens cannot burn CPU without the global scheduler. On
+        // saturation reject 503 without touching the global scheduler.
+        if (!admissionGate.tryAcquireFallback()) {
+            recordReason("fallback-saturated", alg);
+            events.publishEvent(new JwsRejectedEvent("fallback-saturated", alg, 0.0));
+            res.setHeader("X-Aegis-Admission", "fallback-saturated");
+            res.sendError(HttpServletResponse.SC_SERVICE_UNAVAILABLE, "fallback verifier saturated");
+            return;
+        }
         long start = System.nanoTime();
         try {
             Jws<Claims> jws = worker.verify(token);
@@ -250,6 +284,8 @@ public class JwsFilter extends OncePerRequestFilter {
             events.publishEvent(new JwsRejectedEvent("verify-failed:" + e.getClass().getSimpleName(), alg, 0.0));
             log.debug("dead-fallback verify failed: {}", e.getMessage());
             res.sendError(HttpServletResponse.SC_UNAUTHORIZED, "invalid token");
+        } finally {
+            admissionGate.releaseFallback();
         }
     }
 }

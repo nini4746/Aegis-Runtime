@@ -54,7 +54,7 @@ curl localhost:8100/actuator/prometheus | grep aegis_
 | `cached_token_does_not_re_invoke_worker` | 토큰 캐시 hit 시 워커 재호출 없음 |
 | `concurrent_flood_triggers_some_rejections` | 64 동시 호출 → 일부 통과·일부 거절·rejected 카운터 존재 |
 
-`mvn test` → 41/41 pass.
+`mvn test` → 45/45 pass.
 
 ## 의도적으로 보류한 항목
 
@@ -62,7 +62,7 @@ curl localhost:8100/actuator/prometheus | grep aegis_
 - 동적 정책(YAML 정책 엔진)
 - 분산 환경 공유 큐
 - mTLS·OAuth2 통합
-- 알고리즘 라이프사이클 per-algo THROTTLE semaphore 분할, DEAD fallback verifier 격리 경로, SmartLifecycle 부팅 오케스트레이션 (라이프사이클 minimal slice의 후속 항목 — `.planning/lifecycle-SPEC.md` 범위 외 참고)
+- 알고리즘 라이프사이클 SmartLifecycle 부팅 오케스트레이션 (라이프사이클 minimal slice의 후속 항목 — `.planning/lifecycle-SPEC.md` 범위 외 참고)
 
 ## 최근 추가
 
